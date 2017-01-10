@@ -270,7 +270,7 @@
                #:map    [mapf list]
                #:reduce [reducef append]
                #:init   [init #f])
-  (for/fold ([h ((or init hash))])
+  (for/fold ([h (or init (hash))])
             ([elem seq])
     (define k (key elem))
     (define v (mapf elem))

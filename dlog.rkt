@@ -33,7 +33,11 @@
      (group (syntax->list #'(clause ...))
        #:by     (syntax-parser [c:CLAUSE (bound #'c.pred)])
        #:map    clause-info
-       #:reduce merge-clause-info))
+       #:reduce merge-clause-info
+       ;; some predicates referred to may have no defining clauses. this ensures
+       ;; they end up with information anyway.
+       #:init   (for/hash ([p (syntax->list #'(clause.refers ... ...))])
+                  (values (bound p) empty-predicate))))
 
    ;; Find the SCCs in the dependency graph
    (define depends
@@ -69,8 +73,10 @@
        ;; run the clauses for each SCC in order.
        (exec-clauses! component-clause ...) ...
        ;; Produce the values of each predicate.
-       (list (freeze-set pred) ...))])
+       (make-immutable-hash
+        (list (cons 'pred (freeze-set pred)) ...)))])
 
+
 ;; Helper macros
 (define-syntax-parser exec-clauses!
   [(_ clause:CLAUSE ...)

@@ -66,11 +66,14 @@
 
 
 ;; Information about predicates derived from their clauses.
-(provide syntax->ident-set (struct-out predicate) clause-info merge-clause-info)
+(provide syntax->ident-set
+         (struct-out predicate) empty-predicate clause-info merge-clause-info)
 
 (define (syntax->ident-set x) (list->set (map bound (syntax->list x))))
 
 (struct predicate (clauses depends negative-depends) #:transparent)
+
+(define empty-predicate (predicate '() (set) (set)))
 
 (define clause-info
   (syntax-parser
