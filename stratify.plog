@@ -1,0 +1,17 @@
+%% pred(X).
+%% uses-pos(X,Y).
+%% uses-neg(X,Y).
+
+use-path(X,Y) :- uses(X,Y).
+use-path(X,Z) :- use-path(X,Y), use-path(X,Z).
+
+negative-cycle(X,Y) :- uses-negated(X,Y), path(Y,X).
+
+invalid() :- negative-cycle(X,Y).
+
+%% alternatively
+uses(X, Y, #t) :- uses-pos(X,Y).
+uses(X, Y, #f) :- uses-neg(X,Y).
+%% NB. requires `and' is monotone... which it is!
+uses(X, Z, and(A,B)) :- uses(X, Y, A), uses(Y, Z, B).
+
