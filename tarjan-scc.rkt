@@ -97,6 +97,9 @@
 ;;
 ;; so generative testing is not obviously useful here
 ;;
+;; although, I wouldn't be surprised if there were a simple but inefficient
+;; implementation of graph isomorphism I haven't thought of. Maybe in Datafun?
+;;
 ;; TODO: more tests.
 (module+ test
   (require rackunit)

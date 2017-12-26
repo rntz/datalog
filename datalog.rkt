@@ -1,5 +1,8 @@
 #lang at-exp racket
 
+;; GRIPE: this file is too long for what it does. the core of Datalog is simpler
+;; than this.
+
 (require
  (for-syntax racket
              racket/syntax
@@ -7,20 +10,47 @@
              "syntax.rkt"
              "tarjan-scc.rkt"
              "util.rkt")
- "util.rkt")
+ syntax/parse
+ "util.rkt"
+ "core-forms.rkt")
 
-;; Provide the macro that understands datalog.
-(provide datalog)
-
-
-;; Information about predicates derived from their clauses.
+;; Provide the macro that understands datalog and its top-level forms.
+(provide datalog (all-from-out "core-forms.rkt"))
 
 
 ;; The syntax transformer
-;; TODO: error message if (datalog ...) used in non-definition context.
+
+;; in a call to local-expand, if #%app and #%datum are in stop-ids, then they
+;; don't get automatically inserted, which is what we want.
+;;
+;; why #%app and not #%plain-app? I don't know.
+(define-for-syntax datalog-top-stop-ids
+  (append core-top-forms (list #'#%app #'#%datum)))
 
 (define-syntax-parser datalog
-  [(_ (~or clause:CLAUSE) ...)
+  [(_ top ...)
+   (define (visit-all forms)
+     (append-map visit (syntax->list forms)))
+   (define (visit form)
+     (syntax-parse (local-expand form 'module datalog-top-stop-ids)
+       #:literals (begin)
+       [(begin top ...) (visit-all #'(top ...))]
+       [t (list #'t)]))
+   #`(datalog-internal #,@(visit-all #'(top ...)))])
+
+;; TODO: error message if (datalog ...) used in non-definition context.
+(define-syntax-parser datalog-internal
+  #:literals (begin)
+  [(_ top:TOP ...)
+
+   ;; munge data.
+   (define clauses (syntax->list #'(top.clauses ... ...)))
+   (define preds
+     (for*/set ([clause clauses]
+                [pred (syntax-parse clause
+                        [c:CLAUSE (syntax->list #'(c.refers ...))])])
+       (bound pred)))
+   (define/with-syntax (pred ...) (map bound-identifier (set->list preds)))
 
    ;; TODO Check arity: Declarations, definitions, and uses of a given predicate
    ;; all have the same arity.
@@ -30,14 +60,13 @@
 
    ;; A hash from predicate names to their information.
    (define predicates
-     (group (syntax->list #'(clause ...))
+     (group clauses
        #:by     (syntax-parser [c:CLAUSE (bound #'c.pred)])
        #:map    clause-info
        #:reduce merge-clause-info
        ;; some predicates referred to may have no defining clauses. this ensures
        ;; they end up with information anyway.
-       #:init   (for/hash ([p (syntax->list #'(clause.refers ... ...))])
-                  (values (bound p) empty-predicate))))
+       #:init   (for/hash ([p preds]) (values p empty-predicate))))
 
    ;; Find the SCCs in the dependency graph
    (define depends
@@ -47,22 +76,16 @@
    (match-define (scc-info components pred->component-index)
      (sccs depends))
 
-   ;; Stratify: Check if any SCC contains a negative edge (negative cycle, no
-   ;; stratification).
+   ;; Check if any SCC contains a negative edge (which implies a negative cycle,
+   ;; no stratification).
    (for* ([component components]
           [v component]
           [w (predicate-negative-depends (hash-ref predicates v))]
           #:when (set-member? component w))
      (error @~a{Cannot stratify: @v uses @w, and @w depends on @|v|!}))
 
-   ;; Extract all predicate names referred to. I want bound-identifier=? because
-   ;; I'm going to be binding these names myself, not referring to them as
-   ;; things already bound.
-   (define/with-syntax (pred ...)
-     (remove-duplicates (syntax->list #'(clause.refers ... ...))
-                        bound-identifier=?))
-
-   (define/with-syntax ((component-clause ...) ...)
+   ;; clauses, organized into SCCs, topologically sorted.
+   (define/with-syntax ((clause ...) ...)
      (for/list ([component components])
        (let*/list ([pred component])
          (predicate-clauses (hash-ref predicates pred)))))
@@ -71,10 +94,10 @@
        ;; initialize predicate sets.
        (define pred (mutable-set)) ...
        ;; run the clauses for each SCC in order.
-       (exec-clauses! component-clause ...) ...
+       (exec-clauses! clause ...) ...
        ;; Produce the values of each predicate.
        (make-immutable-hash
-        (list (cons 'pred (freeze-set pred)) ...)))])
+        (list (cons 'pred pred) ...)))])
 
 
 ;; Helper macros
@@ -85,6 +108,8 @@
        (exec-clause! changed clause) ...
        (when changed (loop)))])
 
+;; 2017-12-26: FIXME: the comment below belongs somewhere else. where?
+;;
 ;; NB. "foo() :- not bar(X)." is disallowed because its Horn clause
 ;; interpretation
 ;;
@@ -106,17 +131,19 @@
        ;; add the new elements to the predicate's set.
        (set-union! clause.pred new-tuples))])
 
+;; (solve-clause CLAUSE)
 (define-syntax-parser solve-clause
-  ;; TODO: negative terms
-  #:datum-literals (:- not)
-  [(_ ((pred:PRED arg:ARGUMENT ...) :- term:+TERM ...))
-   #'(solve-w/bound () (term ...) (set (list arg.as-expr ...)))])
+  ;; TODO: negative literals
+  #:literals (:- ~)
+  [(_ (:- (pred:PRED arg:ARGUMENT ...) lit:+LIT ...))
+   #'(solve-w/bound () (lit ...) (set (list arg.as-expr ...)))])
 
+;; (solve-w/bound (VARIABLE ...) (LIT ...) body ...)
 (define-syntax-parser solve-w/bound
   [(_ (_:VARIABLE ...) () body ...) #'(let () body ...)]
 
   [(_ (bound-var:VARIABLE ...)
-      ((pred:PRED arg:ARGUMENT ...) term:+TERM ...)
+      ((pred:PRED arg:ARGUMENT ...) lit:+LIT ...)
       body ...)
 
    (define bound-vars (syntax->list #'(bound-var ...)))
@@ -134,41 +161,14 @@
         [v:VARIABLE #'v]
         [a:ATOM #'a.as-pattern])))
 
-   ;; maybe define a template-expander here? and use it?
    #'(let*/set ([tuple pred])
        (match tuple
          [(list arg-pat ...)
-          (solve-w/bound (new-bound-var ...) (term ...) body ...)]
-         [_ (set)]))]
-
-  ;; [(_ (v:VARIABLE ...) (term:+TERM ...) body ...)
-  ;;  ;; what the fuck is going on here.
-  ;;  ;; this nests in the wrong order!
-  ;;  (define-values (_ result)
-  ;;   (for/fold ([bound-vars (set)]
-  ;;              [body #'(begin body ...)])
-  ;;             ([term (syntax->list #'(term ...))])
-  ;;     (define/syntax-parse (pred:PRED arg:ARGUMENT ...) term)
-  ;;     (define/syntax-parse ((~or var:VARIABLE (~not _:VARIABLE)) ...)
-  ;;       #'(arg ...))
-  ;;     (define new-vars (list->set (syntax->datum #'(var ...))))
-  ;;     (define tuple-patterns
-  ;;       (for/list ([arg (syntax->list #'(arg ...))])
-  ;;         (syntax-parse arg
-  ;;           [a:ATOM #'a.as-expr]
-  ;;           [v:VARIABLE (if (set-member? bound-vars (syntax->datum #'v))
-  ;;                           #'(== v)
-  ;;                           #'v)])))
-  ;;     (values
-  ;;      (set-union bound-vars new-vars)
-  ;;      #`(let*/set ([tuple pred])
-  ;;                  (match tuple
-  ;;                    [(list #,@tuple-patterns) #,body]
-  ;;                    [_ (set)])))))
-  ;;  result]
-  )
+          (solve-w/bound (new-bound-var ...) (lit ...) body ...)]
+         [_ (set)]))])
 
 
+;; Examples and testing
 (define (test e #:n [n 1])
   (pretty-print (syntax->datum (if n (let loop ([n n] [e e])
                                        (if (= n 0) e
@@ -177,28 +177,35 @@
 
 (module+ example
   (datalog
-   ((person john) :-)
-   ((person mary) :-)
-   ((person hilary) :-)
-   ((person alice) :-) ((person bob) :-) ((person charlie) :-)
+   (:- (person john))  (:- (person mary)) (:- (person hilary))
+   (:- (person alice)) (:- (person bob))  (:- (person charlie))
+   (:- (peep X) (person X))))
 
-   ((peep X) :- (person X))
+(module+ graph-example
+  (datalog
+   (:- (node john)) (:- (node mary)) (:- (node sue))
+   (:- (edge john mary))
+   (:- (edge mary sue))
 
-   ((edge john mary) :-)
+   (:- (refl X X) (node X))
+   (:- (symm X Y) (edge X Y))
+   (:- (symm X Y) (symm Y X))
+   (:- (trans X Y) (edge X Y))
+   (:- (trans X Z) (trans X Y) (trans Y Z))
 
-   ((symm X Y) :- (edge X Y))
-   ((symm X Y) :- (symm Y X))
+   (:- (equiv X Y) (edge X Y))
+   (:- (equiv X X) (node X))
+   (:- (equiv X Y) (equiv Y X))
+   (:- (equiv X Z) (equiv X Y) (equiv Y Z))))
 
-   ))
 
 (module+ obama-example
   (datalog
-   ;; uh-oh, putting this here causes a problem
-   ((person barack) :-) ((person michelle) :-)
-   ((person malia) :-)  ((person sasha) :-)
+   (:- (person barack)) (:- (person michelle))
+   (:- (person malia))  (:- (person sasha))
 
-   ((married barack michelle) :-)
-   ((parent michelle malia) :-)
-   ((parent michelle sasha) :-)
-   ;; all of michelle's children are barack's.
-   ((parent barack X) :- (parent michelle X))))
+   (:- (married barack michelle))
+   (:- (parent michelle malia))
+   (:- (parent michelle sasha))
+   ;; all of michelle's children happen to be barack's.
+   (:- (parent barack X) (parent michelle X))))

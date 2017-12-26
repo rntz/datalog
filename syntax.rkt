@@ -1,15 +1,20 @@
 #lang racket
 
-(require (for-template racket/base) syntax/parse "ident.rkt")
+(require (for-template racket/base "core-forms.rkt")
+         syntax/parse "ident.rkt")
+
+(provide core-top-forms core-top-form?)
+(define core-top-forms (list #': #':- #'begin))
+(define (core-top-form? x) (member x core-top-forms free-identifier=?))
 
 ;; ---------- Grammar ----------
-;; TOP ::= DECLARE | CLAUSE
-;; DECLARE ::= (NAME : NAME ...)
-;; CLAUSE ::= (HEAD :- TERM ...)
+;; TOP ::= DECLARE | CLAUSE | (begin TOP ...)
+;; DECLARE ::= (: NAME NAME ...)
+;; CLAUSE ::= (:- HEAD LIT ...)
 ;;
 ;; HEAD :: = (NAME ARG ...)
-;; TERM ::= +TERM | (not +TERM)
-;; +TERM ::= (NAME ARG ...)
+;; LIT ::= +LIT | (~ +LIT)
+;; +LIT ::= (NAME ARG ...)
 ;;
 ;; ARG ::= VAR | ATOM
 ;; ATOM ::= NAME
@@ -19,7 +24,7 @@
 
 
 ;; TODO: declaring & using external predicates
-(provide DECLARE CLAUSE TERM +TERM ARGUMENT VARIABLE ATOM PRED NAME)
+(provide TOP DECLARE CLAUSE LIT +LIT ARGUMENT VARIABLE ATOM PRED NAME)
 
 ;; Helper functions
 (define (name? id) (first-char char-lower-case? id))
@@ -28,29 +33,40 @@
   (define s (symbol->string (syntax->datum id)))
   (and (< 0 (string-length s)) (pred (string-ref s 0))))
 
+(define-syntax-class TOP
+  #:literals (begin)
+  (pattern clause:CLAUSE
+           #:attr (clauses 1) (syntax->list #'(clause)))
+  (pattern (begin decl:TOP ...)
+           #:attr (clauses 1) (syntax->list #'(decl.clauses ... ...)))
+  ;; TODO
+  ;; (pattern declare:DECLARE)
+  )
+
 (define-syntax-class DECLARE
-  #:datum-literals (:)
-  (pattern (pred:NAME : arg:NAME ...)))
+  #:literals (:)
+  (pattern (: pred:NAME arg:NAME ...)))
 
 ;; TODO: using arbitrary racket code as a filter. but what about free
 ;; variables? bind them explicitly, maybe?
 (define-syntax-class CLAUSE
-  #:datum-literals (:-)
-  (pattern ((pred:NAME arg:ARGUMENT ...) :- body:TERM ...)
+  #:literals (:- ~)
+  (pattern (:- (pred:NAME arg:ARGUMENT ...) body:LIT ...)
            #:attr (depends 1) (syntax->list #'(body.pred ...))
            #:attr (negative-depends 1)
            (syntax-parse #'(body ...)
-             [((~or ((~datum not) (pred _ ...)) _) ...)
+             #:literals (~)
+             [((~or (~ (pred _ ...)) _) ...)
               (syntax->list #'(pred ...))])
            #:attr (refers 1) (syntax->list #'(pred depends ...))))
 
-(define-syntax-class TERM
-  #:datum-literals (not)
+(define-syntax-class LIT
+  #:literals (~)
   (pattern (pred:NAME arg:ARGUMENT ...))
-  (pattern (not (pred:NAME arg:ARGUMENT ...))))
+  (pattern (~ (pred:NAME arg:ARGUMENT ...))))
 
 ;; positive terms
-(define-syntax-class +TERM (pattern (pred:NAME arg:ARGUMENT ...)))
+(define-syntax-class +LIT (pattern (pred:NAME arg:ARGUMENT ...)))
 
 (define-syntax-class ARGUMENT
   (pattern v:VARIABLE #:attr as-expr #'v)

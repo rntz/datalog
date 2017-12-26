@@ -1,10 +1,13 @@
-#lang s-exp "datalog.rkt"
+#lang s-exp "dlg.rkt"
 
 ;; (parent : parent child)
 ;; (ancestor : ancestor descendent)
 
-((parent alice bob) :-)
-((parent bob charlie) :-)
+;; (! (parent alice bob)
+;;    (parent bob charlie))
 
-((ancestor X Y) :- (parent X Y))
-((ancestor X Z) :- (ancestor X Y) (ancestor Y Z))
+(:- (parent alice bob))
+(:- (parent bob charlie))
+
+(:- (ancestor X Y) (parent X Y))
+(:- (ancestor X Z) (ancestor X Y) (ancestor Y Z))
