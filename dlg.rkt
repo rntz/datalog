@@ -12,5 +12,6 @@
   (#%module-begin (datalog blah ...)))
 
 ;; arg, datalog macro doesn't do local expansion!
+;; 2017-12-26: is this still true?
 (define-syntax-rule (! decl ...)
   (begin (:- decl) ...))

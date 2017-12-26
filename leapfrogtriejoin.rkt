@@ -75,7 +75,8 @@
       ;; whether you've reached the same element in every column by, after
       ;; leapfrogging, comparing the value you reached to the value at the head
       ;; of the next column. This might possibly have a performance benefit?
-      (define S (list->vector columns #;(sort columns <= #:key head)))
+      #;(define S (list->vector (sort columns <= #:key head)))
+      (define S (list->vector columns))
       ;; (! P i) is our position/pointer/iterator into (! S i).
       (define P (make-vector N 0))
       ;; (@ i) --> the pointed-at value in column i
