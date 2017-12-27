@@ -6,14 +6,14 @@
 
 ;; I can probably do this in typed/racket. It might even improve performance.
 
-(require "util.rkt" racket/generator)
+(require "util.rkt" racket/generator racket/syntax)
 
 ;; Convenient abbreviations for vector operations.
-(define ! vector-ref)
+(define @ vector-ref)
 (define := vector-set!)
 (define len vector-length)
 (define (empty? v) (= 0 (len v)))
-(define (head v) (! v 0))
+(define (head v) (@ v 0))
 
 ;; Our tests use rackunit & live in a test submodule.
 (module+ test (require rackunit))
@@ -26,21 +26,21 @@
   (assert! (< ptr (len vec)))
   (define N (len vec))
   (cond
-    [(>= (! vec ptr) target) ptr]
+    [(>= (@ vec ptr) target) ptr]
     [#t
      ;; Jump forward in power-of-two leaps until we hit a larger element.
      (define step
        (let loop ([step 1])
          (define next (+ ptr step))
          (cond
-           [(or (<= N next) (<= target (! vec next))) step]
+           [(or (<= N next) (<= target (@ vec next))) step]
            [#t (set! ptr next) (loop (* 2 step))])))
 
      ;; Binary search between i and i+step. It's possible N < i+step, so take
      ;; care not to go out of bounds.
      (let loop ([step step])
        (define next (+ ptr step))
-       (when (and (< next N) (< (! vec next) target))
+       (when (and (< next N) (< (@ vec next) target))
          (set! ptr next))
        (if (> step 0) (loop (quotient step 2))
            (and (< (+ 1 ptr) N) (+ 1 ptr))))]))
@@ -51,7 +51,7 @@
 (define (gallop-to-ref vec ptr target)
   (cond
     [(>= ptr (len vec)) #f]
-    [(<= target (! vec ptr)) ptr]
+    [(<= target (@ vec ptr)) ptr]
     [#t (gallop-to vec (+ ptr 1) target)]))
 
 
@@ -59,6 +59,8 @@
 
 ;; Takes a list of vectors. Returns a sequence of results from their
 ;; intersection.
+;;
+;; TODO: needs to take vectors and *ranges* within those vectors!
 (define (intersect columns)
   (define N (length columns))
   (cond
@@ -77,23 +79,23 @@
       ;; of the next column. This might possibly have a performance benefit?
       #;(define S (list->vector (sort columns <= #:key head)))
       (define S (list->vector columns))
-      ;; (! P i) is our position/pointer/iterator into (! S i).
+      ;; (@ P i) is our position/pointer/iterator into (@ S i).
       (define P (make-vector N 0))
-      ;; (@ i) --> the pointed-at value in column i
-      (define-syntax-rule (@ i) (! (! S i) (! P i)))
+      ;; (@@ i) --> the pointed-at value in column i
+      (define-syntax-rule (@@ i) (@ (@ S i) (@ P i)))
 
       ;; `i` is the index of the column we're searching.
       ;; invariant: `target` is the largest value any ptr points at.
       (let/ec done
         (let loop ([i 0])
-          (define target (@ i))
+          (define target (@@ i))
 
           (do ([target-count 1 (+ 1 target-count)])
               ((= target-count N))
             (set! i (modulo (+ i 1) N)) ;; advance to next sequence
             ;; search for target
-            (:= P i (or (gallop-to (! S i) (! P i) target) (done)))
-            (let ((found (@ i)))
+            (:= P i (or (gallop-to (@ S i) (@ P i) target) (done)))
+            (let ((found (@@ i)))
               (unless (= found target)
                 ;; found a bigger, better target! search for it, instead.
                 (set! target found)
@@ -101,8 +103,41 @@
 
           ;; we found one!
           (yield target)
-          (:= P i (or (gallop-past (! S i) (! P i) target) (done)))
+          (:= P i (or (gallop-past (@ S i) (@ P i) target) (done)))
           (loop i))))]))
+
+
+;; Columnar layout simplifies simple galloping iterators, but I'm not sure it
+;; simplifies trie-iterators. It might be more performant, though.
+;;
+;; TODO: explain `ixs`.
+;; TODO: probably want `depth` cached for efficiency, or to use a vector.
+(struct trie-iter (columns [posns #:mutable]) #:transparent)
+
+(define (trie-iter-depth iter) (len (trie-iter-posns iter)))
+(define (trie-iter-posn iter)  (car (trie-iter-posns iter)))
+
+(define (trie-iter-at-end? iter)
+  TODO)
+
+(define (trie-iter-get iter)
+  (assert! (not (trie-iter-at-end? iter)))
+  (@ (@ (trie-iter-columns iter) (trie-iter-depth iter))
+     (trie-iter-posn iter)))
+
+(define (trie-iter-up! iter)
+  (assert! (not (null? (trie-iter-posns iter))))
+  (set-trie-iter-posns! (cdr (trie-iter-posns iter))))
+
+;; we use (open) as an opportunity to find the end of the run of equal values in
+;; the current column we're looking at, to establish the bounds for our
+;; search of the remaining columns...
+(define (trie-iter-open! iter)
+  ;; what if trie-iter-posns is empty?
+  (define posn (car (trie-iter-posns iter)))
+  TODO)
+
+(define (trie-iter-seek! iter target) TODO)
 
 
 ;; Tests for intersection
@@ -145,10 +180,7 @@
   (-> rows? table?)
   (-make-table rows (make-hash)))
 
-;; Our global state.
-(define database/c (hash/c symbol? table?))
-(define/contract database (parameter/c database/c) (make-parameter (make-hash)))
-
+;; Gets an index on a particular table, constructing it if necessary.
 (define/contract (table-index! table column-indices)
   (-> table? indexing? index?)
   (hash-ref! (table-indices table)
@@ -161,13 +193,57 @@
   ;; in place, which is harmless as long as we're not multithreaded; what
   ;; matters in `rows` is the set of rows, not their order.
   (for ([i (reverse column-indices)])
-    (vector-sort! rows <= #:key (lambda (row) (! row i))))
+    (vector-sort! rows <= #:key (lambda (row) (@ row i))))
   ;; now, construct the columns.
   (for/vector ([i column-indices])
-    (vector-map (lambda (row) (! row i)) rows)))
+    (vector-map (lambda (row) (@ row i)) rows)))
+
+
+;; ---------- Global state ----------
+(define database/c (hash/c symbol? table?))
+(define/contract database (parameter/c database/c) (make-parameter (make-hash)))
 
 
 ;; ---------- Leapfrog triejoin for conjunctive queries ----------
 (define arg? (or/c symbol? scalar?))
 (define atom? (cons/c symbol? (listof arg?)))
 (define query? (listof atom?))
+
+(define/contract (pick-variable-ordering query)
+  (-> query? (listof symbol?))
+  (define seen (mutable-set))
+  (define (unseen?! x)
+    (if (set-member? seen x) #f
+         (begin0 #t (set-add! seen x))))
+  (for*/list ([atom query]
+              [arg (cdr atom)]
+              #:when (and (symbol? arg) (unseen?! arg)))
+    arg))
+
+;; (define/contract (compile-query query)
+;;   (-> query? syntax?)
+
+;;   ;; first, pick an order in which to find variables' possible values.
+;;   (define variables (pick-variable-ordering query))
+
+;;   (define table-indices
+;;     (for/list ([atom query])
+;;       (match-define `(,pred ,@args) atom)
+;;       ;; figure out what order to index in.
+;;       ;; how do we handle scalars?f
+;;       #`(table-index! (hash-ref (database) '#,p) #,TODO)))
+
+;;   ;; generate the appropriate indices
+
+;;   (define/with-syntax ((x x-seq) ...)
+;;     (for/list ([v vars])
+;;       (with-syntax ([x (gensym v)])
+;;         (list #'name
+;;               #'(intersect TODO)))))
+
+;;   (with-syntax ([((x x-seq) ...) clauses])
+;;    #'(for*/vector ([x x-seq] ...)
+;;        (vector x ...))))
+
+;; (define (test-query q)
+;;   (pretty-print (syntax->datum (compile-query q))))
